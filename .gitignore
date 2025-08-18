@@ -1,0 +1,9 @@
+.env
+/data/
+/**/data/
+/outputs/
+/**/outputs/
+/copy-of-spatial-understanding/
+/**/copy-of-spatial-understanding/
+.DS_Store
+
