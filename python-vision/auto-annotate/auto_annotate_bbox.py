@@ -77,17 +77,20 @@ def _save_debug_previews(orig: Image.Image, boxes: List[dict], model_size: Tuple
     font = _load_font(16)
     for i, b in enumerate(boxes):
         x0p, y0p, x1p, y1p = _convert_box_to_pixels(b["box_2d"], "yx", orig.size, model_size)
-        draw.rectangle([(x0p, y0p), (x1p, y1p)], outline=(80, 220, 120, 255), width=3)
-        draw.rectangle([(x0p, y0p), (x1p, y1p)], fill=(80, 220, 120, 64))
+        # Make outline more transparent
+        draw.rectangle([(x0p, y0p), (x1p, y1p)], outline=(80, 220, 120, 180), width=3)
+        # Make fill much more transparent (reduced alpha from 64 to 20)
+        draw.rectangle([(x0p, y0p), (x1p, y1p)], fill=(80, 220, 120, 20))
         label = b.get("label", "shark")
         tw, th = draw.textbbox((0, 0), label, font=font)[2:]
         pad = 6
         bx0, by0 = x0p + 8, max(0, y0p - th - pad * 2 - 8)
-        draw.rounded_rectangle([(bx0, by0), (bx0 + tw + pad * 2, by0 + th + pad * 2)], radius=8, fill=(60, 180, 80, 220))
+        # Make label background more transparent
+        draw.rounded_rectangle([(bx0, by0), (bx0 + tw + pad * 2, by0 + th + pad * 2)], radius=8, fill=(60, 180, 80, 150))
         draw.text((bx0 + pad, by0 + pad), label, fill=(255, 255, 255, 255), font=font)
     out_path = f"{out_prefix}_preview.jpg"
     img.convert("RGB").save(out_path, quality=90)
-    print(f"Saved debug preview: {out_path}")
+    print(f"Saved debug preview: {out_prefix}_preview.jpg")
 
 
 def format_v7_annotations(image_path: str, boxes: List[dict], class_names: List[str], orig_size: Tuple[int, int], model_size: Tuple[int, int]) -> dict:
@@ -124,16 +127,17 @@ def collect_images(path: str) -> List[str]:
 
 def main():
     parser = argparse.ArgumentParser("Auto annotate images using Gemini boxes and upload to V7")
-    parser.add_argument("--path", default="../../data/example_images/shark3.jpg", help="Image file or directory of images")
-    parser.add_argument("--items", default="sharks", help="What to detect (e.g., 'sharks', 'cars')")
-    parser.add_argument("--class_names", nargs='+', default=["shark"], help="Specific class names to filter for")
+    parser.add_argument("--path", default="../../data/example_images/paint_image1.jpg", help="Image file or directory of images")
+    parser.add_argument("--items", default="paint", help="What to detect (e.g., 'sharks', 'cars')")
+    parser.add_argument("--class_names", nargs='+', default=["paint"], help="Specific class names to filter for")
     parser.add_argument("--v7_team", type=str, default="clearobject", help="V7 Team Slug.")
-    parser.add_argument("--v7_dataset", type=str, default="shark-detection-presale", help="V7 Dataset Slug.")
+    parser.add_argument("--v7_dataset", type=str, default="human-in-office-detection", help="V7 Dataset Slug.")
     parser.add_argument("--model", default="gemini-2.5-pro")
     parser.add_argument("--temperature", type=float, default=DEFAULT_TEMPERATURE)
     parser.add_argument("--max-input-size", type=int, default=DEFAULT_MAX_INPUT_SIZE)
     parser.add_argument("--min-box", type=int, default=24, help="Minimum box size in normalized units (0..1000)")
     parser.add_argument("--debug", action="store_true", help="Show debug info")
+    parser.add_argument("--local-only", action="store_true", help="Skip V7 upload and keep images in annotations folder")
     args = parser.parse_args()
 
     images = collect_images(args.path)
@@ -196,6 +200,13 @@ def main():
                 json.dump(v7, f, indent=2)
             json_paths.append(jpath)
             uploaded_image_paths.append(img_path)
+            
+            # Copy image to annotations folder if local-only mode
+            if args.local_only:
+                img_filename = os.path.basename(img_path)
+                img_dest = os.path.join(ann_dir, img_filename)
+                shutil.copy2(img_path, img_dest)
+                print(f"Copied image to: {img_dest}")
 
             # Save local debug previews with different coordinate interpretations
             out_prefix = os.path.join(ann_dir, f"{os.path.splitext(os.path.basename(img_path))[0]}_preview")
@@ -211,6 +222,12 @@ def main():
     if not json_paths:
         print("No annotations generated; stopping.")
         shutil.rmtree(base_dir)
+        return
+
+    # Skip V7 upload if local-only mode
+    if args.local_only:
+        print(f"Local-only mode: Skipping V7 upload. Annotations and images saved to: {ann_dir}")
+        print(f"Generated {len(json_paths)} annotation files.")
         return
 
     # Upload to V7
