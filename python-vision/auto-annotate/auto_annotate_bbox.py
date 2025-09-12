@@ -2,12 +2,12 @@ import os
 import sys
 import io
 import json
-import argparse
 import shutil
 import uuid
 import time
 from typing import List, Optional, Tuple
 from PIL import Image, ImageDraw, ImageFont
+from dataclasses import dataclass, field
 
 # Add parent directory to path so we can import vision
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
@@ -125,25 +125,31 @@ def collect_images(path: str) -> List[str]:
     return [path]
 
 
-def main():
-    parser = argparse.ArgumentParser("Auto annotate images using Gemini boxes and upload to V7")
-    parser.add_argument("--path", default="../../data/example_images/paint_image1.jpg", help="Image file or directory of images")
-    parser.add_argument("--items", default="paint", help="What to detect (e.g., 'sharks', 'cars')")
-    parser.add_argument("--class_names", nargs='+', default=["paint"], help="Specific class names to filter for")
-    parser.add_argument("--v7_team", type=str, default="clearobject", help="V7 Team Slug.")
-    parser.add_argument("--v7_dataset", type=str, default="human-in-office-detection", help="V7 Dataset Slug.")
-    parser.add_argument("--model", default="gemini-2.5-pro")
-    parser.add_argument("--temperature", type=float, default=DEFAULT_TEMPERATURE)
-    parser.add_argument("--max-input-size", type=int, default=DEFAULT_MAX_INPUT_SIZE)
-    parser.add_argument("--min-box", type=int, default=24, help="Minimum box size in normalized units (0..1000)")
-    parser.add_argument("--debug", action="store_true", help="Show debug info")
-    parser.add_argument("--local-only", action="store_true", help="Skip V7 upload and keep images in annotations folder")
-    args = parser.parse_args()
+@dataclass
+class BBoxAutoConfig:
+    # Inputs
+    path: str = "../../data/example_images/paint_image1.jpg"
+    items: str = "paint"
+    prompt_prefix: Optional[str] = None
+    class_names: List[str] = field(default_factory=lambda: ["paint"])  # filter labels
+    # Model
+    model: str = "gemini-2.5-pro"
+    temperature: float = DEFAULT_TEMPERATURE
+    max_input_size: int = DEFAULT_MAX_INPUT_SIZE
+    # Filtering
+    min_box: int = 24  # in normalized 0..1000 units (consistent with existing logic)
+    # Behavior
+    debug: bool = False
+    local_only: bool = False
+    v7_team: str = "clearobject"
+    v7_dataset: str = "human-in-office-detection"
 
-    images = collect_images(args.path)
+
+def run(cfg: BBoxAutoConfig) -> int:
+    images = collect_images(cfg.path)
     if not images:
         print("No images found.")
-        return
+        return 0
 
     # Prepare temp workspace
     base_dir = "./v7_upload_gemini"
@@ -153,7 +159,7 @@ def main():
     os.makedirs(ann_dir)
 
     # Inference per image using vision package
-    model = args.model or pick_model("boxes")
+    model = cfg.model or pick_model("boxes")
     client = get_client()  # ensure GOOGLE_API_KEY is set
 
     json_paths: List[str] = []
@@ -163,14 +169,14 @@ def main():
         try:
             print(f"Processing {img_path}...")
             orig = load_image_from_path_or_url(img_path)
-            model_img = resize_for_model(orig, args.max_input_size)
-            prompt = make_prompt("boxes", args.items, None, 25)
+            model_img = resize_for_model(orig, cfg.max_input_size)
+            prompt = make_prompt("boxes", cfg.items, None, 25, prefix=cfg.prompt_prefix)
             
             print(f"Prompt: {prompt}")
             print(f"Model: {model}")
             print(f"Image size: {orig.size} -> {model_img.size}")
             
-            out = run_boxes(orig, model_img, prompt, model, args.temperature)
+            out = run_boxes(orig, model_img, prompt, model, cfg.temperature)
             
             raw_text = out.get('raw_text', 'No raw text')
             print(f"Raw response length: {len(raw_text)}")
@@ -183,7 +189,7 @@ def main():
             filtered = []
             for b in boxes:
                 y0, x0, y1, x1 = b["box_2d"]
-                if (y1 - y0) >= args.min_box and (x1 - x0) >= args.min_box:
+                if (y1 - y0) >= cfg.min_box and (x1 - x0) >= cfg.min_box:
                     filtered.append(b)
             
             if not filtered:
@@ -191,7 +197,7 @@ def main():
                 continue
                 
             # Build V7 JSON with class filtering
-            v7 = format_v7_annotations(img_path, filtered, args.class_names, orig.size, model_img.size)
+            v7 = format_v7_annotations(img_path, filtered, cfg.class_names, orig.size, model_img.size)
             if not v7["annotations"]:
                 print(f"No matching classes found for {img_path}")
                 continue
@@ -202,7 +208,7 @@ def main():
             uploaded_image_paths.append(img_path)
             
             # Copy image to annotations folder if local-only mode
-            if args.local_only:
+            if cfg.local_only:
                 img_filename = os.path.basename(img_path)
                 img_dest = os.path.join(ann_dir, img_filename)
                 shutil.copy2(img_path, img_dest)
@@ -222,13 +228,13 @@ def main():
     if not json_paths:
         print("No annotations generated; stopping.")
         shutil.rmtree(base_dir)
-        return
+        return 0
 
     # Skip V7 upload if local-only mode
-    if args.local_only:
+    if cfg.local_only:
         print(f"Local-only mode: Skipping V7 upload. Annotations and images saved to: {ann_dir}")
         print(f"Generated {len(json_paths)} annotation files.")
-        return
+        return 0
 
     # Upload to V7
     load_dotenv()
@@ -238,7 +244,7 @@ def main():
         shutil.rmtree(base_dir)
         return
 
-    dataset_slug = f"{args.v7_team}/{args.v7_dataset}"
+    dataset_slug = f"{cfg.v7_team}/{cfg.v7_dataset}"
     authenticate(api_key=api_key, default_team=True)
     client = Client.local()
     dataset = client.get_remote_dataset(dataset_slug)
@@ -285,4 +291,19 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    # Edit the CONFIG values below to control behavior instead of passing CLI args.
+    CONFIG = BBoxAutoConfig(
+        path="../../data/example_images/paint_image1.jpg",
+        items="paint",
+        prompt_prefix=None,
+        class_names=["paint"],
+        model="gemini-2.5-pro",
+        temperature=DEFAULT_TEMPERATURE,
+        max_input_size=DEFAULT_MAX_INPUT_SIZE,
+        min_box=24,
+        debug=False,
+        local_only=False,
+        v7_team="clearobject",
+        v7_dataset="human-in-office-detection",
+    )
+    run(CONFIG)
